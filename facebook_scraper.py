@@ -24,7 +24,7 @@ _timeout = None
 
 _likes_regex = re.compile(r'like_def[^>]*>([0-9,.]+)')
 _comments_regex = re.compile(r'cmt_def[^>]*>([0-9,.]+)')
-_shares_regex = re.compile(r'([0-9,.]+)\s+Shares')
+_shares_regex = re.compile(r'([0-9,.]+)\s+Shares?')
 _link_regex = re.compile(r"href=\"https:\/\/lm\.facebook\.com\/l\.php\?u=(.+?)\&amp;h=")
 
 _cursor_regex = re.compile(r'href:"(/page_content[^"]+)"')  # First request
@@ -43,6 +43,7 @@ def get_posts(account, pages=10, timeout=5, sleep=0, credentials=None):
     global _session, _timeout
 
     url = f'{_base_url}/{account}/posts/'
+    post_base_url = f'https://facebook.com/{account}/posts/'
 
     _session = HTMLSession()
     _session.headers.update(_headers)
@@ -57,7 +58,7 @@ def get_posts(account, pages=10, timeout=5, sleep=0, credentials=None):
 
     while True:
         for article in html.find('article'):
-            yield _extract_post(article)
+            yield _extract_post(article, post_base_url)
 
         pages -= 1
         if pages == 0:
@@ -83,7 +84,7 @@ def get_posts(account, pages=10, timeout=5, sleep=0, credentials=None):
                 cursor_blob = action['code']
 
 
-def _extract_post(article):
+def _extract_post(article, post_base_url):
     text, post_text, shared_text = _extract_text(article)
     return {
         'post_id': _extract_post_id(article),
@@ -95,7 +96,7 @@ def _extract_post(article):
         'likes': _find_and_search(article, 'footer', _likes_regex, _parse_int) or 0,
         'comments': _find_and_search(article, 'footer', _comments_regex, _parse_int) or 0,
         'shares':  _find_and_search(article, 'footer', _shares_regex, _parse_int) or 0,
-        'post_url': _extract_post_url(article),
+        'post_url': _extract_post_url(article, post_base_url),
         'link': _extract_link(article),
     }
 
@@ -194,9 +195,18 @@ def _extract_link(article):
     return None
 
 
-def _extract_post_url(article):
-    query_params = ('story_fbid', 'id')
+def _extract_post_url(article, post_base_url):
+    # "Paid Partnership" posts won't have the url available in the header, so we need
+    # to build it ourselves by finding the post_id: (e.g. "post_id":698164600589291)
+    post_id_regex = r'\"post_id\":(\d+)'
+    post_id_matches = re.search(post_id_regex, str(article), re.MULTILINE)
 
+    if post_id_matches and post_id_matches.group(1):
+        post_id = post_id_matches.group(1)
+        return f'{post_base_url}{post_id}'
+
+    # If we didn't find the post_id then fall-back to looking in the header
+    query_params = ('story_fbid', 'id')
     elements = article.find('header a')
     for element in elements:
         href = element.attrs.get('href', '')
